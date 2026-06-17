@@ -29,19 +29,28 @@ jobs:
           tar xzf "nginx-${NGINX_VERSION}.tar.gz"
           cd "nginx-${NGINX_VERSION}"
           ./configure --with-compat --add-dynamic-module="${GITHUB_WORKSPACE}"
-          make modules
+          make
+          test -f objs/nginx
           test -f objs/ngx_http_hello_module.so
 
       - name: Smoke test
         run: |
           cd "nginx-${NGINX_VERSION}"
+          prefix=/tmp/nginx-hello
           module_path="$(pwd)/objs/ngx_http_hello_module.so"
-          cat > /tmp/nginx-hello.conf <<EOF
+          mkdir -p "${prefix}/logs"
+          cat > "${prefix}/nginx.conf" <<EOF
           load_module ${module_path};
           daemon off;
-          pid /tmp/nginx-hello.pid;
+          pid ${prefix}/nginx.pid;
+          error_log ${prefix}/logs/error.log;
           events { worker_connections 32; }
           http {
+            client_body_temp_path ${prefix}/client_body_temp;
+            proxy_temp_path ${prefix}/proxy_temp;
+            fastcgi_temp_path ${prefix}/fastcgi_temp;
+            uwsgi_temp_path ${prefix}/uwsgi_temp;
+            scgi_temp_path ${prefix}/scgi_temp;
             server {
               listen 18080;
               location / { hello; }
@@ -49,7 +58,8 @@ jobs:
           }
           EOF
 
-          ./objs/nginx -c /tmp/nginx-hello.conf &
+          ./objs/nginx -t -p "${prefix}" -c "${prefix}/nginx.conf"
+          ./objs/nginx -p "${prefix}" -c "${prefix}/nginx.conf" &
           nginx_pid=$!
 
           for _ in $(seq 1 30); do
@@ -61,6 +71,7 @@ jobs:
             sleep 0.5
           done
 
-          kill "${nginx_pid}" || true
+          kill "${nginx_pid}" 2>/dev/null || true
+          cat "${prefix}/logs/error.log" 2>/dev/null || true
           echo "nginx hello handler did not respond in time"
           exit 1
