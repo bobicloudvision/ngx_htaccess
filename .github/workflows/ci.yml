@@ -19,7 +19,7 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential libpcre2-dev zlib1g-dev libssl-dev wget
+          sudo apt-get install -y build-essential libpcre2-dev zlib1g-dev libssl-dev wget curl libcrypt-dev
 
       - name: Download nginx
         run: wget -q "https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz"
@@ -29,49 +29,11 @@ jobs:
           tar xzf "nginx-${NGINX_VERSION}.tar.gz"
           cd "nginx-${NGINX_VERSION}"
           ./configure --with-compat --add-dynamic-module="${GITHUB_WORKSPACE}"
-          make
-          test -f objs/nginx
-          test -f objs/ngx_http_hello_module.so
+          make -j"$(nproc)"
+          test -f objs/ngx_http_htaccess_module.so
 
-      - name: Smoke test
+      - name: Integration tests
         run: |
-          cd "nginx-${NGINX_VERSION}"
-          prefix=/tmp/nginx-hello
-          module_path="$(pwd)/objs/ngx_http_hello_module.so"
-          mkdir -p "${prefix}/logs"
-          cat > "${prefix}/nginx.conf" <<EOF
-          load_module ${module_path};
-          daemon off;
-          pid ${prefix}/nginx.pid;
-          error_log ${prefix}/logs/error.log;
-          events { worker_connections 32; }
-          http {
-            client_body_temp_path ${prefix}/client_body_temp;
-            proxy_temp_path ${prefix}/proxy_temp;
-            fastcgi_temp_path ${prefix}/fastcgi_temp;
-            uwsgi_temp_path ${prefix}/uwsgi_temp;
-            scgi_temp_path ${prefix}/scgi_temp;
-            server {
-              listen 18080;
-              location / { hello; }
-            }
-          }
-          EOF
-
-          ./objs/nginx -t -p "${prefix}" -c "${prefix}/nginx.conf"
-          ./objs/nginx -p "${prefix}" -c "${prefix}/nginx.conf" &
-          nginx_pid=$!
-
-          for _ in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:18080/ | grep -q 'Hello, World!'; then
-              kill "${nginx_pid}"
-              wait "${nginx_pid}" || true
-              exit 0
-            fi
-            sleep 0.5
-          done
-
-          kill "${nginx_pid}" 2>/dev/null || true
-          cat "${prefix}/logs/error.log" 2>/dev/null || true
-          echo "nginx hello handler did not respond in time"
-          exit 1
+          chmod +x tests/integration/*.sh
+          tests/integration/run.sh
+          tests/integration/wordpress.sh
