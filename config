@@ -10,7 +10,8 @@ ngx_module_srcs="$ngx_addon_dir/src/ngx_http_htaccess_module.c \
                  $ngx_addon_dir/src/htaccess_alias.c \
                  $ngx_addon_dir/src/htaccess_auth.c \
                  $ngx_addon_dir/src/htaccess_headers.c \
-                 $ngx_addon_dir/src/htaccess_execute.c"
+                 $ngx_addon_dir/src/htaccess_execute.c \
+                 $ngx_addon_dir/src/htaccess_vars.c"
 
 . auto/module
 

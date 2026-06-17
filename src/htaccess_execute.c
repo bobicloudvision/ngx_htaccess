@@ -142,10 +142,12 @@ htaccess_execute(ngx_http_request_t *r, ngx_http_htaccess_loc_conf_t *conf,
     htaccess_result_t          result;
     ngx_uint_t                 pass;
     ngx_int_t                  rc;
+    ngx_str_t                  request_uri;
 
     ngx_memzero(&state, sizeof(state));
     state.uri = r->uri;
     state.query_string = r->args;
+    request_uri = r->uri;
 
     htaccess_resolve_filename(r, &state);
 
@@ -153,6 +155,13 @@ htaccess_execute(ngx_http_request_t *r, ngx_http_htaccess_loc_conf_t *conf,
 
         if (htaccess_build_merged_ctx(r, conf, cache, &merged) != NGX_OK) {
             return NGX_ERROR;
+        }
+
+        if (pass == 0) {
+            result = htaccess_apply_files_deny(r, &merged, &request_uri);
+            if (result == HTACCESS_RESULT_FORBIDDEN) {
+                return NGX_HTTP_FORBIDDEN;
+            }
         }
 
         result = htaccess_apply_alias(r, &merged, &state);
@@ -187,8 +196,7 @@ htaccess_execute(ngx_http_request_t *r, ngx_http_htaccess_loc_conf_t *conf,
                     }
                 }
             }
-            r->headers_out.status = NGX_HTTP_UNAUTHORIZED;
-            return ngx_http_send_header(r);
+            return NGX_HTTP_UNAUTHORIZED;
         }
         if (result == HTACCESS_RESULT_FORBIDDEN) {
             {
@@ -202,8 +210,7 @@ htaccess_execute(ngx_http_request_t *r, ngx_http_htaccess_loc_conf_t *conf,
                     }
                 }
             }
-            r->headers_out.status = NGX_HTTP_FORBIDDEN;
-            return ngx_http_send_header(r);
+            return NGX_HTTP_FORBIDDEN;
         }
 
         htaccess_apply_headers(r, &merged);

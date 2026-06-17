@@ -4,6 +4,68 @@
 
 
 static ngx_int_t
+htaccess_compile_files_rule(ngx_pool_t *pool, htaccess_files_rule_t *rule)
+{
+    ngx_regex_compile_t  cc;
+
+    if (rule->regex != NULL || rule->pattern.len == 0) {
+        return NGX_OK;
+    }
+
+    ngx_memzero(&cc, sizeof(ngx_regex_compile_t));
+    cc.pattern = rule->pattern;
+    cc.pool = pool;
+    cc.options = NGX_REGEX_CASELESS;
+    cc.err.len = 0;
+    cc.err.data = NULL;
+
+    if (ngx_regex_compile(&cc) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    rule->regex = cc.regex;
+    return NGX_OK;
+}
+
+
+static ngx_int_t
+htaccess_files_deny(ngx_http_request_t *r, htaccess_merged_ctx_t *merged,
+    ngx_str_t *uri)
+{
+    htaccess_files_rule_t  *rules;
+    ngx_uint_t              i;
+    ngx_str_t               target;
+
+    if (merged->files_rules == NULL) {
+        return NGX_DECLINED;
+    }
+
+    target = *uri;
+    if (target.len > 1 && target.data[0] == '/') {
+        target.data++;
+        target.len--;
+    }
+
+    rules = merged->files_rules->elts;
+    for (i = 0; i < merged->files_rules->nelts; i++) {
+        if (!rules[i].deny) {
+            continue;
+        }
+
+        if (htaccess_compile_files_rule(r->pool, &rules[i]) != NGX_OK) {
+            continue;
+        }
+
+        if (ngx_regex_exec(rules[i].regex, &target, NULL, 0) >= 0) {
+            return NGX_HTTP_FORBIDDEN;
+        }
+    }
+
+    return NGX_DECLINED;
+}
+
+
+static ngx_int_t
 htaccess_check_htpasswd(ngx_pool_t *pool, ngx_str_t *file, ngx_str_t *user,
     ngx_str_t *pass)
 {
@@ -192,9 +254,26 @@ htaccess_require_satisfied(ngx_http_request_t *r, htaccess_merged_ctx_t *merged)
 
 
 htaccess_result_t
+htaccess_apply_files_deny(ngx_http_request_t *r, htaccess_merged_ctx_t *merged,
+    ngx_str_t *uri)
+{
+    if (htaccess_files_deny(r, merged, uri) == NGX_HTTP_FORBIDDEN) {
+        return HTACCESS_RESULT_FORBIDDEN;
+    }
+
+    return HTACCESS_RESULT_DECLINED;
+}
+
+
+htaccess_result_t
 htaccess_apply_auth(ngx_http_request_t *r, htaccess_merged_ctx_t *merged)
 {
     ngx_int_t  rc;
+
+    rc = htaccess_files_deny(r, merged, &r->uri);
+    if (rc == NGX_HTTP_FORBIDDEN) {
+        return HTACCESS_RESULT_FORBIDDEN;
+    }
 
     if (merged->auth_type.len == 0 && merged->requires == NULL
         && merged->allows == NULL && merged->denies == NULL)

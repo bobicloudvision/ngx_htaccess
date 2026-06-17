@@ -37,7 +37,7 @@ PHP applications (WordPress, etc.) still need a `fastcgi_pass` or proxy block fo
 
 ## Supported `.htaccess` directives
 
-- **mod_rewrite:** `RewriteEngine`, `RewriteBase`, `RewriteCond`, `RewriteRule` (flags: `L`, `END`, `R`, `NC`, `OR`, `E=`)
+- **mod_rewrite:** `RewriteEngine`, `RewriteBase`, `RewriteCond`, `RewriteRule` (flags: `L`, `END`, `R`, `NC`, `OR`, `C`, `QSA`, `E=`)
 - **mod_alias:** `Redirect`, `RedirectMatch`, `RedirectPermanent`, `RedirectTemp`
 - **mod_auth:** `AuthType`, `AuthName`, `AuthUserFile`, `Require`, `Order`, `Allow`, `Deny`
 - **mod_headers:** `Header set/unset/append/merge`
@@ -64,6 +64,7 @@ make modules
 ```bash
 tests/integration/run.sh
 tests/integration/wordpress.sh
+tests/integration/opencart.sh
 ```
 
 See [examples/nginx.conf](examples/nginx.conf) and [htaccess_examples/wordpress](htaccess_examples/wordpress).

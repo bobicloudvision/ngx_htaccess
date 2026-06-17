@@ -43,6 +43,7 @@ typedef enum {
     HTACCESS_COND_TEST_QUERY_STRING,
     HTACCESS_COND_TEST_HTTP,
     HTACCESS_COND_TEST_ENV,
+    HTACCESS_COND_TEST_FSPATH,
     HTACCESS_COND_TEST_OTHER
 } htaccess_cond_test_t;
 
@@ -84,6 +85,9 @@ typedef struct {
     ngx_uint_t                  nocase;
     ngx_uint_t                  redirect;
     ngx_uint_t                  redirect_code;
+    ngx_uint_t                  chain;
+    ngx_uint_t                  chain_in;
+    ngx_uint_t                  qsa;
     ngx_array_t                *env_vars;   /* ngx_str_t pairs "VAR:val" */
     ngx_array_t                *conditions; /* htaccess_rewrite_cond_t */
     ngx_regex_t                *regex;
@@ -104,7 +108,15 @@ typedef struct {
     ngx_str_t     name;
     ngx_str_t     value;
     ngx_str_t     target;
+    ngx_uint_t    always;
 } htaccess_header_t;
+
+
+typedef struct {
+    ngx_str_t     pattern;
+    ngx_uint_t    deny;
+    ngx_regex_t  *regex;
+} htaccess_files_rule_t;
 
 
 typedef struct {
@@ -115,6 +127,7 @@ typedef struct {
 
 typedef struct {
     htaccess_directive_id_t  id;
+    ngx_str_t                files_match;
     union {
         ngx_flag_t                  flag;
         ngx_str_t                   str;
@@ -152,6 +165,7 @@ typedef struct {
     ngx_array_t           *error_documents;
     ngx_uint_t             options;
     ngx_str_t              directory_index;
+    ngx_array_t           *files_rules;     /* htaccess_files_rule_t */
 } htaccess_merged_ctx_t;
 
 
@@ -246,6 +260,8 @@ htaccess_result_t htaccess_apply_rewrite(ngx_http_request_t *r,
     htaccess_request_state_t *state);
 htaccess_result_t htaccess_apply_auth(ngx_http_request_t *r,
     htaccess_merged_ctx_t *merged);
+htaccess_result_t htaccess_apply_files_deny(ngx_http_request_t *r,
+    htaccess_merged_ctx_t *merged, ngx_str_t *uri);
 htaccess_result_t htaccess_apply_headers(ngx_http_request_t *r,
     htaccess_merged_ctx_t *merged);
 htaccess_result_t htaccess_apply_options(ngx_http_request_t *r,
@@ -253,6 +269,14 @@ htaccess_result_t htaccess_apply_options(ngx_http_request_t *r,
 
 ngx_int_t htaccess_execute(ngx_http_request_t *r,
     ngx_http_htaccess_loc_conf_t *conf, htaccess_cache_t *cache);
+
+ngx_int_t htaccess_expand(ngx_pool_t *pool, ngx_http_request_t *r,
+    htaccess_request_state_t *state, ngx_str_t *tpl, ngx_str_t *match,
+    int *captures, ngx_uint_t ncaptures, ngx_str_t *out);
+
+ngx_str_t *htaccess_env_get(htaccess_request_state_t *state, ngx_str_t *name);
+void htaccess_env_set(ngx_pool_t *pool, htaccess_request_state_t *state,
+    ngx_str_t *name, ngx_str_t *value);
 
 
 #endif /* HTACCESS_DIRECTIVES_H */

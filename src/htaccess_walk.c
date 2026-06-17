@@ -57,10 +57,37 @@ htaccess_load_file(ngx_http_request_t *r, htaccess_cache_t *cache,
 
 
 static void
+htaccess_mark_rewrite_chains(ngx_array_t *directives)
+{
+    htaccess_directive_t  *d;
+    ngx_uint_t             i, j;
+
+    if (directives == NULL) {
+        return;
+    }
+
+    d = directives->elts;
+    for (i = 0; i < directives->nelts; i++) {
+        if (d[i].id != HTACCESS_DIR_REWRITE_RULE || !d[i].u.rewrite_rule.chain) {
+            continue;
+        }
+
+        for (j = i + 1; j < directives->nelts; j++) {
+            if (d[j].id == HTACCESS_DIR_REWRITE_RULE) {
+                d[j].u.rewrite_rule.chain_in = 1;
+                break;
+            }
+        }
+    }
+}
+
+
+static void
 htaccess_merge_directive(ngx_pool_t *pool, htaccess_merged_ctx_t *merged,
     htaccess_dir_ctx_t *dir, htaccess_directive_t *d)
 {
     ngx_str_t  *s;
+    htaccess_files_rule_t *fr;
 
     switch (d->id) {
 
@@ -82,6 +109,7 @@ htaccess_merge_directive(ngx_pool_t *pool, htaccess_merged_ctx_t *merged,
             if (dst != NULL) {
                 *dst = *d;
             }
+            htaccess_mark_rewrite_chains(dir->directives);
         }
         break;
 
@@ -114,6 +142,26 @@ htaccess_merge_directive(ngx_pool_t *pool, htaccess_merged_ctx_t *merged,
         break;
 
     case HTACCESS_DIR_REQUIRE:
+        if (d->files_match.len > 0) {
+            if (merged->files_rules == NULL) {
+                merged->files_rules = ngx_array_create(pool, 2,
+                    sizeof(htaccess_files_rule_t));
+            }
+            if (merged->files_rules != NULL) {
+                fr = ngx_array_push(merged->files_rules);
+                if (fr != NULL) {
+                    ngx_memzero(fr, sizeof(htaccess_files_rule_t));
+                    fr->pattern = d->files_match;
+                    if (d->u.str.len >= 10
+                        && ngx_strncasecmp(d->u.str.data, (u_char *) "all denied",
+                            10) == 0)
+                    {
+                        fr->deny = 1;
+                    }
+                }
+            }
+            break;
+        }
         if (merged->requires == NULL) {
             merged->requires = ngx_array_create(pool, 2, sizeof(ngx_str_t));
         }

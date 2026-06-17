@@ -37,3 +37,4 @@ jobs:
           chmod +x tests/integration/*.sh
           tests/integration/run.sh
           tests/integration/wordpress.sh
+          tests/integration/opencart.sh

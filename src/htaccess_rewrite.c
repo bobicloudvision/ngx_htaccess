@@ -2,7 +2,7 @@
 #include "htaccess_directives.h"
 
 
-static ngx_str_t *
+ngx_str_t *
 htaccess_env_get(htaccess_request_state_t *state, ngx_str_t *name)
 {
     htaccess_env_var_t  *vars;
@@ -25,7 +25,7 @@ htaccess_env_get(htaccess_request_state_t *state, ngx_str_t *name)
 }
 
 
-static void
+void
 htaccess_env_set(ngx_pool_t *pool, htaccess_request_state_t *state,
     ngx_str_t *name, ngx_str_t *value)
 {
@@ -103,7 +103,43 @@ htaccess_test_cond(ngx_http_request_t *r, htaccess_request_state_t *state,
     switch (cond->test) {
 
     case HTACCESS_COND_TEST_FILENAME:
-        return htaccess_file_test(&state->filename, cond->op);
+        if (cond->op >= HTACCESS_COND_OP_FILE
+            && cond->op <= HTACCESS_COND_OP_NOTEXISTS)
+        {
+            return htaccess_file_test(&state->filename, cond->op);
+        }
+        value = state->filename;
+        break;
+
+    case HTACCESS_COND_TEST_FSPATH:
+        {
+            ngx_http_core_loc_conf_t  *clcf;
+            ngx_str_t                  expanded, path;
+            u_char                    *p;
+
+            clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
+            if (htaccess_expand(r->pool, r, state, &cond->name, NULL, NULL, 0,
+                    &expanded) != NGX_OK)
+            {
+                return NGX_ERROR;
+            }
+
+            path.len = clcf->root.len + expanded.len + 2;
+            path.data = ngx_pnalloc(r->pool, path.len);
+            if (path.data == NULL) {
+                return NGX_ERROR;
+            }
+
+            p = ngx_cpymem(path.data, clcf->root.data, clcf->root.len);
+            if (clcf->root.len == 0 || clcf->root.data[clcf->root.len - 1] != '/') {
+                *p++ = '/';
+            }
+            p = ngx_cpymem(p, expanded.data, expanded.len);
+            *p = '\0';
+            path.len = p - path.data;
+
+            return htaccess_file_test(&path, cond->op);
+        }
 
     case HTACCESS_COND_TEST_URI:
     case HTACCESS_COND_TEST_QUERY_STRING:
@@ -326,11 +362,93 @@ htaccess_apply_substitution(ngx_pool_t *pool, htaccess_rewrite_rule_t *rule,
 }
 
 
+static ngx_int_t
+htaccess_apply_target_uri(ngx_http_request_t *r, htaccess_request_state_t *state,
+    ngx_str_t *target, ngx_uint_t qsa)
+{
+    ngx_str_t  uri, args;
+    u_char    *p, *q;
+    size_t     len;
+
+    uri = *target;
+    args.len = 0;
+    args.data = NULL;
+
+    q = ngx_strlchr(uri.data, uri.data + uri.len, '?');
+    if (q != NULL) {
+        uri.len = q - uri.data;
+        args.data = q + 1;
+        args.len = target->len - uri.len - 1;
+    }
+
+    if (qsa && state->query_string.len) {
+        if (args.len) {
+            u_char  *start;
+
+            len = args.len + 1 + state->query_string.len;
+            p = ngx_pnalloc(r->pool, len);
+            if (p == NULL) {
+                return NGX_ERROR;
+            }
+            start = p;
+            p = ngx_cpymem(p, args.data, args.len);
+            *p++ = '&';
+            p = ngx_cpymem(p, state->query_string.data,
+                           state->query_string.len);
+            args.data = start;
+            args.len = len;
+        } else {
+            args = state->query_string;
+        }
+    }
+
+    if (uri.len > 0 && uri.data[0] != '/') {
+        p = ngx_pnalloc(r->pool, uri.len + 1);
+        if (p == NULL) {
+            return NGX_ERROR;
+        }
+        p[0] = '/';
+        ngx_memcpy(p + 1, uri.data, uri.len);
+        uri.data = p;
+        uri.len++;
+    }
+
+    r->uri.len = uri.len;
+    r->uri.data = ngx_pnalloc(r->pool, uri.len);
+    if (r->uri.data == NULL) {
+        return NGX_ERROR;
+    }
+    ngx_memcpy(r->uri.data, uri.data, uri.len);
+
+    r->args = args;
+
+    if (r->args.len) {
+        r->unparsed_uri.len = r->uri.len + 1 + r->args.len;
+        r->unparsed_uri.data = ngx_pnalloc(r->pool, r->unparsed_uri.len);
+        if (r->unparsed_uri.data == NULL) {
+            return NGX_ERROR;
+        }
+        ngx_snprintf(r->unparsed_uri.data, r->unparsed_uri.len, "%V?%V",
+                     &r->uri, &r->args);
+    } else {
+        r->unparsed_uri = r->uri;
+    }
+
+    r->valid_unparsed_uri = 0;
+    r->internal = 1;
+    state->uri = r->uri;
+    state->query_string = r->args;
+
+    return NGX_OK;
+}
+
+
 static void
 htaccess_apply_env_flags(ngx_pool_t *pool, htaccess_request_state_t *state,
-    htaccess_rewrite_rule_t *rule, ngx_http_request_t *r)
+    htaccess_rewrite_rule_t *rule, ngx_http_request_t *r, ngx_str_t *match,
+    int *captures, ngx_uint_t ncaptures)
 {
-    ngx_str_t    *env, name, value, *header;
+    ngx_str_t    *env, name, value, expanded;
     u_char       *colon;
     ngx_uint_t    i;
 
@@ -350,42 +468,13 @@ htaccess_apply_env_flags(ngx_pool_t *pool, htaccess_request_state_t *state,
         value.data = colon + 1;
         value.len = env[i].data + env[i].len - value.data;
 
-        if (value.len >= 6
-            && ngx_strncmp(value.data, "%{HTTP:", 6) == 0)
+        if (htaccess_expand(pool, r, state, &value, match, captures,
+                ncaptures, &expanded) != NGX_OK)
         {
-            ngx_str_t hname;
-            hname.data = value.data + 6;
-            hname.len = value.len - 7;
-            if (value.data[value.len - 1] == '}') {
-                hname.len--;
-            }
-            header = NULL;
-            {
-                ngx_list_part_t  *part = &r->headers_in.headers.part;
-                ngx_table_elt_t  *h;
-                ngx_uint_t        j;
-                while (part) {
-                    h = part->elts;
-                    for (j = 0; j < part->nelts; j++) {
-                        if (h[j].key.len == hname.len
-                            && ngx_strncasecmp(h[j].key.data, hname.data,
-                                               hname.len) == 0)
-                        {
-                            header = &h[j].value;
-                            break;
-                        }
-                    }
-                    if (header) break;
-                    part = part->next;
-                }
-            }
-            if (header) {
-                htaccess_env_set(pool, state, &name, header);
-            }
             continue;
         }
 
-        htaccess_env_set(pool, state, &name, &value);
+        htaccess_env_set(pool, state, &name, &expanded);
     }
 }
 
@@ -399,14 +488,17 @@ htaccess_apply_rewrite(ngx_http_request_t *r,
     htaccess_directive_t     *directives;
     htaccess_rewrite_rule_t  *rule;
     ngx_uint_t                i, j;
-    ngx_str_t                 rel, out, uri;
+    ngx_str_t                 rel, out, sub;
     ngx_int_t                 rc;
+    int                       captures[20];
+    ngx_uint_t                chain_active;
 
     if (merged->dirs == NULL) {
         return HTACCESS_RESULT_DECLINED;
     }
 
     dirs = merged->dirs->elts;
+    chain_active = 0;
 
     for (i = 0; i < merged->dirs->nelts; i++) {
         if (!dirs[i].rewrite_engine || dirs[i].directives == NULL) {
@@ -421,25 +513,42 @@ htaccess_apply_rewrite(ngx_http_request_t *r,
 
             rule = &directives[j].u.rewrite_rule;
 
+            if (rule->chain_in && !chain_active) {
+                continue;
+            }
+
             if (htaccess_compile_rule(r->pool, rule) != NGX_OK) {
+                if (rule->chain) {
+                    chain_active = 0;
+                }
                 continue;
             }
 
             if (htaccess_match_conditions(r, state, rule) != NGX_OK) {
+                if (rule->chain) {
+                    chain_active = 0;
+                }
                 continue;
             }
 
             rel = htaccess_relative_uri(&state->uri, &dirs[i].url_prefix);
 
-            rc = ngx_regex_exec(rule->regex, &rel, NULL, 0);
+            rc = ngx_regex_exec(rule->regex, &rel, captures, 20);
             if (rc == NGX_REGEX_NO_MATCHED) {
+                if (rule->chain) {
+                    chain_active = 0;
+                }
                 continue;
             }
             if (rc < 0) {
                 return HTACCESS_RESULT_ERROR;
             }
 
-            htaccess_apply_env_flags(r->pool, state, rule, r);
+            htaccess_apply_env_flags(r->pool, state, rule, r, &rel, captures, 20);
+
+            if (rule->chain) {
+                chain_active = 1;
+            }
 
             if (rule->substitution.len == 1
                 && rule->substitution.data[0] == '-')
@@ -450,10 +559,32 @@ htaccess_apply_rewrite(ngx_http_request_t *r,
                 continue;
             }
 
-            if (htaccess_apply_substitution(r->pool, rule, &rel,
-                    &dirs[i].rewrite_base, &out) != NGX_OK)
+            if (htaccess_expand(r->pool, r, state, &rule->substitution, &rel,
+                    captures, 20, &sub) != NGX_OK)
             {
                 return HTACCESS_RESULT_ERROR;
+            }
+
+            if (rule->chain && !rule->last && !rule->end) {
+                continue;
+            }
+
+            out = sub;
+            if (out.len > 0 && out.data[0] != '/'
+                && !(out.len > 7 && ngx_strncmp(out.data, "http://", 7) == 0)
+                && !(out.len > 8 && ngx_strncmp(out.data, "https://", 8) == 0)
+                && ngx_strlchr(out.data, out.data + out.len, '?') == NULL)
+            {
+                if (htaccess_apply_substitution(r->pool, rule, &rel,
+                        &dirs[i].rewrite_base, &out) != NGX_OK)
+                {
+                    return HTACCESS_RESULT_ERROR;
+                }
+                if (htaccess_expand(r->pool, r, state, &out, &rel, captures, 20,
+                        &sub) == NGX_OK)
+                {
+                    out = sub;
+                }
             }
 
             if (rule->redirect) {
@@ -463,25 +594,13 @@ htaccess_apply_rewrite(ngx_http_request_t *r,
                 return HTACCESS_RESULT_REDIRECT;
             }
 
-            if (out.len > 0 && out.data[0] != '/') {
-                uri.len = out.len + 1;
-                uri.data = ngx_pnalloc(r->pool, uri.len);
-                if (uri.data == NULL) {
-                    return HTACCESS_RESULT_ERROR;
-                }
-                uri.data[0] = '/';
-                ngx_memcpy(uri.data + 1, out.data, out.len);
-                out = uri;
+            if (htaccess_apply_target_uri(r, state, &out, rule->qsa) != NGX_OK) {
+                return HTACCESS_RESULT_ERROR;
             }
 
-            state->uri = out;
+            chain_active = 0;
 
             if (rule->last || rule->end) {
-                if (ngx_strncmp(state->uri.data, r->uri.data, r->uri.len) == 0
-                    && state->uri.len == r->uri.len)
-                {
-                    return HTACCESS_RESULT_DECLINED;
-                }
                 return HTACCESS_RESULT_OK;
             }
         }

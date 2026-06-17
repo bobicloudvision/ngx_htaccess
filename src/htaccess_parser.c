@@ -50,6 +50,45 @@ htaccess_directive_id(ngx_str_t *name)
 
 
 static ngx_int_t
+htaccess_join_args(ngx_pool_t *pool, ngx_array_t *args, ngx_uint_t from,
+    ngx_str_t *out)
+{
+    ngx_str_t  *a;
+    ngx_uint_t  i;
+    size_t      len;
+    u_char     *p;
+
+    if (args->nelts <= from) {
+        out->len = 0;
+        out->data = NULL;
+        return NGX_ERROR;
+    }
+
+    a = args->elts;
+    len = 0;
+    for (i = from; i < args->nelts; i++) {
+        len += a[i].len + (i > from ? 1 : 0);
+    }
+
+    p = ngx_pnalloc(pool, len);
+    if (p == NULL) {
+        return NGX_ERROR;
+    }
+
+    out->data = p;
+    out->len = len;
+    for (i = from; i < args->nelts; i++) {
+        if (i > from) {
+            *p++ = ' ';
+        }
+        p = ngx_cpymem(p, a[i].data, a[i].len);
+    }
+
+    return NGX_OK;
+}
+
+
+static ngx_int_t
 htaccess_parse_rewrite_cond(ngx_pool_t *pool, ngx_array_t *args,
     htaccess_rewrite_cond_t *cond)
 {
@@ -87,6 +126,12 @@ htaccess_parse_rewrite_cond(ngx_pool_t *pool, ngx_array_t *args,
         {
             cond->test = HTACCESS_COND_TEST_QUERY_STRING;
             p += 12;
+        } else if (last - p >= 9
+                   && ngx_strncasecmp(p, (u_char *) "HTTP_HOST", 9) == 0)
+        {
+            cond->test = HTACCESS_COND_TEST_HTTP;
+            cond->name.data = (u_char *) "Host";
+            cond->name.len = 4;
         } else if (last - p >= 5
                    && ngx_strncasecmp(p, (u_char *) "HTTP:", 5) == 0)
         {
@@ -104,6 +149,10 @@ htaccess_parse_rewrite_cond(ngx_pool_t *pool, ngx_array_t *args,
         } else {
             cond->test = HTACCESS_COND_TEST_OTHER;
         }
+    } else if (test->len >= 1 && test->data[0] == '%') {
+        cond->test = HTACCESS_COND_TEST_FSPATH;
+        cond->name.data = test->data + 1;
+        cond->name.len = test->len - 1;
     }
 
     if (value == NULL) {
@@ -219,6 +268,10 @@ htaccess_parse_rule_flags(ngx_pool_t *pool, ngx_str_t *flags,
                     ? NGX_HTTP_MOVED_TEMPORARILY
                     : (ngx_uint_t) code;
             }
+        } else if (part.len == 1 && part.data[0] == 'C') {
+            rule->chain = 1;
+        } else if (part.len == 3 && ngx_strncasecmp(part.data, (u_char *) "QSA", 3) == 0) {
+            rule->qsa = 1;
         } else if (part.len >= 2 && ngx_strncasecmp(part.data, (u_char *) "E=", 2) == 0) {
             ngx_str_t *env;
 
@@ -237,10 +290,12 @@ htaccess_parse_rule_flags(ngx_pool_t *pool, ngx_str_t *flags,
 
 static ngx_int_t
 htaccess_push_directive(ngx_pool_t *pool, htaccess_parsed_file_t *file,
-    htaccess_directive_id_t id, ngx_array_t *args, ngx_array_t **pending_conds)
+    htaccess_directive_id_t id, ngx_array_t *args, ngx_array_t **pending_conds,
+    ngx_str_t *files_match)
 {
     htaccess_directive_t  *d;
     ngx_str_t             *name, *arg;
+    ngx_uint_t             offset;
 
     if (id == HTACCESS_DIR_REWRITE_COND) {
         htaccess_rewrite_cond_t  *pc;
@@ -268,6 +323,9 @@ htaccess_push_directive(ngx_pool_t *pool, htaccess_parsed_file_t *file,
 
     ngx_memzero(d, sizeof(htaccess_directive_t));
     d->id = id;
+    if (files_match != NULL && files_match->len > 0) {
+        d->files_match = *files_match;
+    }
 
     switch (id) {
 
@@ -329,6 +387,9 @@ htaccess_push_directive(ngx_pool_t *pool, htaccess_parsed_file_t *file,
     case HTACCESS_DIR_DENY:
     case HTACCESS_DIR_EXPIRES_DEFAULT:
     case HTACCESS_DIR_DIRECTORY_INDEX:
+        if (id == HTACCESS_DIR_REQUIRE && args->nelts > 2) {
+            return htaccess_join_args(pool, args, 1, &d->u.str);
+        }
         d->u.str = ((ngx_str_t *) args->elts)[1];
         break;
 
@@ -341,10 +402,21 @@ htaccess_push_directive(ngx_pool_t *pool, htaccess_parsed_file_t *file,
         if (args->nelts < 3) {
             return NGX_ERROR;
         }
-        d->u.header.action = ((ngx_str_t *) args->elts)[1];
-        d->u.header.name = ((ngx_str_t *) args->elts)[2];
-        if (args->nelts > 3) {
-            d->u.header.value = ((ngx_str_t *) args->elts)[3];
+        offset = 1;
+        if (((ngx_str_t *) args->elts)[1].len == 6
+            && ngx_strncasecmp(((ngx_str_t *) args->elts)[1].data,
+                (u_char *) "always", 6) == 0)
+        {
+            d->u.header.always = 1;
+            offset = 2;
+        }
+        if (args->nelts <= offset + 1) {
+            return NGX_ERROR;
+        }
+        d->u.header.action = ((ngx_str_t *) args->elts)[offset];
+        d->u.header.name = ((ngx_str_t *) args->elts)[offset + 1];
+        if (args->nelts > offset + 2) {
+            d->u.header.value = ((ngx_str_t *) args->elts)[offset + 2];
         }
         break;
 
@@ -436,6 +508,43 @@ htaccess_block_enabled(ngx_str_t *block, ngx_uint_t in_rewrite,
 }
 
 
+static void
+htaccess_parse_files_match(ngx_str_t *block, ngx_str_t *pattern)
+{
+    u_char  *p, *last, *start;
+
+    ngx_memzero(pattern, sizeof(ngx_str_t));
+
+    if (block->len < 12) {
+        return;
+    }
+
+    p = block->data + 1;
+    last = block->data + block->len - 1;
+
+    if (ngx_strncasecmp(p, (u_char *) "FilesMatch", 10) != 0) {
+        return;
+    }
+
+    p += 10;
+    while (p < last && (*p == ' ' || *p == '\t')) {
+        p++;
+    }
+
+    if (p >= last || *p != '"') {
+        return;
+    }
+
+    start = ++p;
+    while (p < last && *p != '"') {
+        p++;
+    }
+
+    pattern->data = start;
+    pattern->len = p - start;
+}
+
+
 htaccess_parsed_file_t *
 htaccess_parse(ngx_pool_t *pool, u_char *start, u_char *end)
 {
@@ -446,6 +555,7 @@ htaccess_parse(ngx_pool_t *pool, u_char *start, u_char *end)
     ngx_int_t               id;
     ngx_uint_t              depth;
     ngx_uint_t              enabled[16];
+    ngx_str_t               files_match[16];
     ngx_array_t            *pending_conds;
     ngx_int_t               rc;
 
@@ -464,6 +574,7 @@ htaccess_parse(ngx_pool_t *pool, u_char *start, u_char *end)
     depth = 0;
     pending_conds = NULL;
     ngx_memzero(enabled, sizeof(enabled));
+    ngx_memzero(files_match, sizeof(files_match));
     enabled[0] = 1;
 
     while (p < end) {
@@ -497,6 +608,7 @@ htaccess_parse(ngx_pool_t *pool, u_char *start, u_char *end)
                 depth++;
                 enabled[depth] = htaccess_block_enabled(&t[0], 1, 1)
                     && enabled[depth - 1];
+                htaccess_parse_files_match(&t[0], &files_match[depth]);
             }
             continue;
         }
@@ -511,7 +623,8 @@ htaccess_parse(ngx_pool_t *pool, u_char *start, u_char *end)
         }
 
         if (htaccess_push_directive(pool, file,
-                (htaccess_directive_id_t) id, tokens, &pending_conds)
+                (htaccess_directive_id_t) id, tokens, &pending_conds,
+                &files_match[depth])
             != NGX_OK)
         {
             return NULL;
