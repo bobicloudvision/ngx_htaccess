@@ -1,0 +1,51 @@
+# nfpm config — produces both .deb and .rpm from one spec.
+# Env vars are expanded by nfpm at build time (see packaging/build.sh):
+#   PKG_VERSION   module version, e.g. 0.1.0
+#   PKG_ARCH      amd64 | arm64 (nfpm maps to x86_64/aarch64 for rpm)
+#   PKG_RELEASE   distro tag baked into the release field, e.g. deb12, el9
+#   NGINX_VERSION nginx branch the .so was built against, e.g. 1.30.2
+#   MODULE_SO     absolute path to the built ngx_http_htaccess_module.so
+name: nginx-module-htaccess
+arch: ${PKG_ARCH}
+platform: linux
+version: ${PKG_VERSION}
+release: ${PKG_RELEASE}
+section: httpd
+priority: optional
+maintainer: ngx_htaccess maintainers <bozhidar@cloudvision.bg>
+description: |
+  Apache .htaccess support for nginx.
+  Dynamic module that reads .htaccess files at request time (mod_rewrite,
+  mod_alias, mod_auth, mod_headers, mod_expires) with per-directory
+  semantics and an LRU cache of parsed rules.
+  Built against nginx ${NGINX_VERSION} with --with-compat.
+vendor: ngx_htaccess
+homepage: https://github.com/bobicloudvision/ngx_htaccess
+license: BSD-2-Clause
+
+contents:
+  - src: ${MODULE_SO}
+    dst: /usr/lib/nginx/modules/ngx_http_htaccess_module.so
+    file_info:
+      mode: 0644
+
+  # Disabled-by-default load snippet. Enable it (or add the load_module line
+  # to nginx.conf) to activate the module — see the package post-install note.
+  - src: ${ADDON_DIR}/packaging/conf/mod-http-htaccess.conf
+    dst: /usr/share/nginx/modules-available/mod-http-htaccess.conf
+    type: config
+    file_info:
+      mode: 0644
+
+overrides:
+  deb:
+    depends:
+      # nginx.org builds dynamic modules with --with-compat; the .so still must
+      # match the nginx minor branch it was compiled against.
+      - nginx (>= ${NGINX_VERSION})
+      - libc6
+      - libcrypt1
+  rpm:
+    depends:
+      - nginx >= ${NGINX_VERSION}
+      - libxcrypt

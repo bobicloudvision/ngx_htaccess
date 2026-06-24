@@ -1,2 +1,4 @@
 /nginx-1.30.2
 nginx-*.tar.gz
+/dist/
+*.so
