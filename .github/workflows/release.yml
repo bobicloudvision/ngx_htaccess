@@ -36,8 +36,6 @@ jobs:
           # --- Fedora (.rpm) ---
           - { image: 'fedora:40',         packager: rpm }
           - { image: 'fedora:41',         packager: rpm }
-          # --- SUSE (.rpm) ---
-          - { image: 'opensuse/leap:15.6', packager: rpm }
     container:
       image: ${{ matrix.image }}
     steps:

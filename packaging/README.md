@@ -41,9 +41,12 @@ NGINX_VERSION=1.28.0 PKG_VERSION=1.0.0 packaging/build.sh deb
 ## Build in CI
 
 `.github/workflows/release.yml` runs the full matrix (Debian 11/12,
-Ubuntu 20.04/22.04/24.04, Rocky 8/9, Fedora 40/41, openSUSE Leap 15.6) on a
-`v*` tag push, then attaches every package to the GitHub release. The nginx
-branch is `1.30.2` by default, overridable via the workflow_dispatch input.
+Ubuntu 20.04/22.04/24.04, Rocky 8/9, Fedora 40/41) on a `v*` tag push, then
+attaches every package to the GitHub release. The nginx branch is `1.30.2` by
+default, overridable via the workflow_dispatch input.
+
+`packaging/build.sh` still supports SUSE (`zypper`) for local builds if you need
+an openSUSE/SLES `.rpm`.
 
 ## Install & enable
 
